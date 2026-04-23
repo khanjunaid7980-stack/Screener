@@ -26,7 +26,7 @@ def revenue_and_margins(fin: pd.DataFrame) -> go.Figure:
     if "NetIncome" in fin.index and "Revenue" in fin.index:
         nm = _safe_ratio(fin.loc["NetIncome"].astype(float), fin.loc["Revenue"].astype(float)) * 100
         fig.add_trace(go.Scatter(x=nm.index.astype(str), y=nm.values, name="Net margin (%)", mode="lines+markers", line=dict(color="#cf222e")), secondary_y=True)
-    fig.update_layout(title="Revenue & Profit Margins", template="simple_white", hovermode="x unified", legend=dict(orientation="h", y=-0.2))
+    fig.update_layout(title="Revenue & Profit Margins", template="plotly_dark", paper_bgcolor="#141a2a", plot_bgcolor="#141a2a", font=dict(color="#e6edf3"), hovermode="x unified", legend=dict(orientation="h", y=-0.2))
     fig.update_yaxes(title_text="Revenue ($B)", secondary_y=False)
     fig.update_yaxes(title_text="Margin (%)", secondary_y=True)
     return fig
@@ -59,7 +59,7 @@ def roic_vs_wacc(fin: pd.DataFrame, wacc: float) -> go.Figure:
         roic = ((ebit * (1 - tax_rate)) / invested) * 100
         fig.add_trace(go.Bar(x=roic.index.astype(str), y=roic.values, name="ROIC (%)", marker_color="#1f6feb"))
         fig.add_hline(y=wacc * 100, line_dash="dash", line_color="#cf222e", annotation_text=f"WACC = {wacc:.2%}", annotation_position="top left")
-    fig.update_layout(title="ROIC vs. WACC", template="simple_white", yaxis_title="%", hovermode="x unified")
+    fig.update_layout(title="ROIC vs. WACC", template="plotly_dark", paper_bgcolor="#141a2a", plot_bgcolor="#141a2a", font=dict(color="#e6edf3"), yaxis_title="%", hovermode="x unified")
     return fig
 
 
@@ -69,7 +69,7 @@ def ebit_to_market_cap(fin: pd.DataFrame, market_cap: float | None) -> go.Figure
         ebit = fin.loc["OperatingIncome"].astype(float)
         ratio = (ebit / market_cap) * 100
         fig.add_trace(go.Scatter(x=ratio.index.astype(str), y=ratio.values, name="EBIT / Market Cap (%)", mode="lines+markers", line=dict(color="#8250df")))
-    fig.update_layout(title="EBIT / Market Cap — Earnings Yield Proxy", template="simple_white", yaxis_title="%", hovermode="x unified")
+    fig.update_layout(title="EBIT / Market Cap — Earnings Yield Proxy", template="plotly_dark", paper_bgcolor="#141a2a", plot_bgcolor="#141a2a", font=dict(color="#e6edf3"), yaxis_title="%", hovermode="x unified")
     return fig
 
 
@@ -84,7 +84,7 @@ def cash_flow_breakdown(fin: pd.DataFrame) -> go.Figure:
     if "CashFromOps" in fin.index and "CapEx" in fin.index:
         fcf = (fin.loc["CashFromOps"].astype(float) - fin.loc["CapEx"].astype(float).abs()) / 1e9
         fig.add_trace(go.Scatter(x=fcf.index.astype(str), y=fcf.values, name="Free Cash Flow ($B)", mode="lines+markers", line=dict(color="#1f6feb", width=3)))
-    fig.update_layout(title="Cash Flow Breakdown", template="simple_white", yaxis_title="$B", barmode="relative", hovermode="x unified")
+    fig.update_layout(title="Cash Flow Breakdown", template="plotly_dark", paper_bgcolor="#141a2a", plot_bgcolor="#141a2a", font=dict(color="#e6edf3"), yaxis_title="$B", barmode="relative", hovermode="x unified")
     return fig
 
 
@@ -103,7 +103,7 @@ def leverage_and_liquidity(fin: pd.DataFrame) -> go.Figure:
         ebit = fin.loc["OperatingIncome"].astype(float) / 1e9
         dte = (debt / ebit).replace([np.inf, -np.inf], np.nan)
         fig.add_trace(go.Scatter(x=dte.index.astype(str), y=dte.values, name="Debt / EBIT (x)", mode="lines+markers", line=dict(color="#8250df")), secondary_y=True)
-    fig.update_layout(title="Leverage & Liquidity", template="simple_white", barmode="group", hovermode="x unified")
+    fig.update_layout(title="Leverage & Liquidity", template="plotly_dark", paper_bgcolor="#141a2a", plot_bgcolor="#141a2a", font=dict(color="#e6edf3"), barmode="group", hovermode="x unified")
     fig.update_yaxes(title_text="$B", secondary_y=False)
     fig.update_yaxes(title_text="x", secondary_y=True)
     return fig
@@ -114,7 +114,7 @@ def dcf_projection_chart(projections: pd.DataFrame) -> go.Figure:
     fig.add_trace(go.Bar(x=projections.index.astype(str), y=projections["FCFF"].values / 1e9, name="FCFF ($B)", marker_color="#1f6feb"), secondary_y=False)
     fig.add_trace(go.Bar(x=projections.index.astype(str), y=projections["PV_FCFF"].values / 1e9, name="PV of FCFF ($B)", marker_color="#8250df"), secondary_y=False)
     fig.add_trace(go.Scatter(x=projections.index.astype(str), y=projections["Revenue"].values / 1e9, name="Revenue ($B)", mode="lines+markers", line=dict(color="#2da44e", width=3)), secondary_y=True)
-    fig.update_layout(title="DCF Projections", template="simple_white", barmode="group", hovermode="x unified", xaxis_title="Projection Year")
+    fig.update_layout(title="DCF Projections", template="plotly_dark", paper_bgcolor="#141a2a", plot_bgcolor="#141a2a", font=dict(color="#e6edf3"), barmode="group", hovermode="x unified", xaxis_title="Projection Year")
     fig.update_yaxes(title_text="Cash Flow ($B)", secondary_y=False)
     fig.update_yaxes(title_text="Revenue ($B)", secondary_y=True)
     return fig
@@ -126,7 +126,7 @@ def price_history_chart(hist: pd.DataFrame, fair_value: float | None = None) -> 
         fig.add_trace(go.Scatter(x=hist["Date"], y=hist["Close"], name="Close", mode="lines", line=dict(color="#1f6feb")))
     if fair_value and np.isfinite(fair_value):
         fig.add_hline(y=fair_value, line_dash="dash", line_color="#2da44e", annotation_text=f"DCF Fair Value ${fair_value:,.2f}", annotation_position="top left")
-    fig.update_layout(title="Price History vs. DCF Fair Value", template="simple_white", yaxis_title="Price", hovermode="x unified")
+    fig.update_layout(title="Price History vs. DCF Fair Value", template="plotly_dark", paper_bgcolor="#141a2a", plot_bgcolor="#141a2a", font=dict(color="#e6edf3"), yaxis_title="Price", hovermode="x unified")
     return fig
 
 
@@ -144,7 +144,7 @@ def sensitivity_heatmap(grid: pd.DataFrame, current_price: float | None = None) 
     title = "Sensitivity: Fair Value per Share (WACC × Terminal g)"
     if current_price:
         title += f" — current price ${current_price:,.2f}"
-    fig.update_layout(title=title, template="simple_white", xaxis_title="Terminal g", yaxis_title="WACC")
+    fig.update_layout(title=title, template="plotly_dark", paper_bgcolor="#141a2a", plot_bgcolor="#141a2a", font=dict(color="#e6edf3"), xaxis_title="Terminal g", yaxis_title="WACC")
     return fig
 
 

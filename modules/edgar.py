@@ -55,9 +55,9 @@ def resolve_ticker(ticker: str) -> dict[str, Any] | None:
 # We try several tags because issuers tag differently across years.
 CONCEPT_MAP: dict[str, list[str]] = {
     "Revenue": [
-        "Revenues",
         "RevenueFromContractWithCustomerExcludingAssessedTax",
         "RevenueFromContractWithCustomerIncludingAssessedTax",
+        "Revenues",
         "SalesRevenueNet",
         "SalesRevenueGoodsNet",
     ],
@@ -128,15 +128,19 @@ class CompanyFacts:
     raw: dict[str, Any] = field(default_factory=dict)
 
     def annual_series(self, concept_tags: list[str]) -> pd.Series:
-        """Return annual (FY) values indexed by fiscal year for the first tag
-        that resolves to data."""
+        """Return annual (FY) values indexed by fiscal year, **merged** across
+        every candidate tag. When multiple tags report a value for the same
+        fiscal year, keep the most recently filed one — which naturally prefers
+        the post-ASC-606 tag (e.g. RevenueFromContractWithCustomer...) over
+        legacy tags (e.g. Revenues) that issuers stopped using."""
         us_gaap = self.raw.get("facts", {}).get("us-gaap", {})
+        allowed_forms = ("10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A")
+        merged: dict[int, tuple[float, str]] = {}
         for tag in concept_tags:
             node = us_gaap.get(tag)
             if not node:
                 continue
             units = node.get("units", {})
-            # Pick a unit: prefer USD, then shares, then per-share, then the first.
             for preferred in ("USD", "shares", "USD/shares"):
                 if preferred in units:
                     unit_key = preferred
@@ -145,28 +149,23 @@ class CompanyFacts:
                 if not units:
                     continue
                 unit_key = next(iter(units))
-            rows = units[unit_key]
-            # Keep annual (10-K) values with an explicit fy and fp=FY.
-            by_year: dict[int, float] = {}
-            for row in rows:
-                if row.get("fp") != "FY" or row.get("form") not in ("10-K", "10-K/A", "20-F", "20-F/A", "40-F"):
+            for row in units[unit_key]:
+                if row.get("fp") != "FY" or row.get("form") not in allowed_forms:
                     continue
                 fy = row.get("fy")
                 val = row.get("val")
                 if fy is None or val is None:
                     continue
-                # If multiple values per year (amendments), keep the latest filed.
-                filed = row.get("filed", "")
-                prev = by_year.get(fy)
+                filed = str(row.get("filed", ""))
+                prev = merged.get(int(fy))
                 if prev is None or filed > prev[1]:
-                    by_year[fy] = (float(val), filed)
-            if by_year:
-                return pd.Series(
-                    {k: v[0] for k, v in sorted(by_year.items())},
-                    name=tag,
-                    dtype="float64",
-                )
-        return pd.Series(dtype="float64")
+                    merged[int(fy)] = (float(val), filed)
+        if not merged:
+            return pd.Series(dtype="float64")
+        return pd.Series(
+            {k: v[0] for k, v in sorted(merged.items())},
+            dtype="float64",
+        )
 
     def build_financials(self, years: int) -> pd.DataFrame:
         """Wide DataFrame: rows = canonical line items, columns = fiscal years."""
