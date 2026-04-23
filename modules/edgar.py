@@ -118,6 +118,49 @@ CONCEPT_MAP: dict[str, list[str]] = {
     "InterestExpense": ["InterestExpense"],
     "IncomeTaxExpense": ["IncomeTaxExpenseBenefit"],
     "PreTaxIncome": ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"],
+    # --- Income Statement additions ---
+    "ResearchAndDevelopment": ["ResearchAndDevelopmentExpense"],
+    "SellingGeneralAdmin": [
+        "SellingGeneralAndAdministrativeExpense",
+        "GeneralAndAdministrativeExpense",
+    ],
+    "OperatingExpenses": ["OperatingExpenses"],
+    "InterestIncome": ["InterestIncomeOperating", "InvestmentIncomeInterest"],
+    # --- Balance Sheet additions ---
+    "AccountsReceivable": [
+        "AccountsReceivableNetCurrent",
+        "ReceivablesNetCurrent",
+    ],
+    "Inventory": ["InventoryNet"],
+    "CurrentAssets": ["AssetsCurrent"],
+    "PropertyPlantEquipment": ["PropertyPlantAndEquipmentNet"],
+    "Goodwill": ["Goodwill"],
+    "IntangibleAssets": ["IntangibleAssetsNetExcludingGoodwill"],
+    "AccountsPayable": ["AccountsPayableCurrent"],
+    "CurrentLiabilities": ["LiabilitiesCurrent"],
+    "RetainedEarnings": ["RetainedEarningsAccumulatedDeficit"],
+    # --- Cash Flow additions ---
+    "CashFromInvesting": ["NetCashProvidedByUsedInInvestingActivities"],
+    "CashFromFinancing": ["NetCashProvidedByUsedInFinancingActivities"],
+    "Dividends": [
+        "PaymentsOfDividends",
+        "PaymentsOfDividendsCommonStock",
+    ],
+    "StockBuybacks": [
+        "PaymentsForRepurchaseOfCommonStock",
+        "PaymentsForRepurchaseOfEquity",
+    ],
+    "DebtIssued": [
+        "ProceedsFromIssuanceOfLongTermDebt",
+        "ProceedsFromRepaymentsOfLongTermDebt",
+    ],
+    "DebtRepaid": ["RepaymentsOfLongTermDebt"],
+    "Acquisitions": [
+        "PaymentsToAcquireBusinessesNetOfCashAcquired",
+        "PaymentsToAcquireBusinessesGross",
+    ],
+    "StockBasedComp": ["ShareBasedCompensation"],
+    "ChangesInWorkingCapital": ["IncreaseDecreaseInOperatingCapital"],
 }
 
 
@@ -236,6 +279,47 @@ def fetch_transcripts_hint(ticker: str) -> str:
     return f"https://www.google.com/search?q={q.replace(' ', '+')}"
 
 
+# Groupings for the traditional three financial statements.
+INCOME_STATEMENT_ROWS = [
+    "Revenue", "CostOfRevenue", "GrossProfit",
+    "ResearchAndDevelopment", "SellingGeneralAdmin", "OperatingExpenses",
+    "OperatingIncome", "InterestExpense", "InterestIncome",
+    "PreTaxIncome", "IncomeTaxExpense", "NetIncome", "EPS",
+]
+
+BALANCE_SHEET_ROWS = [
+    "CashAndEquivalents", "AccountsReceivable", "Inventory", "CurrentAssets",
+    "PropertyPlantEquipment", "Goodwill", "IntangibleAssets", "TotalAssets",
+    "AccountsPayable", "ShortTermDebt", "CurrentLiabilities",
+    "LongTermDebt", "TotalLiabilities", "RetainedEarnings", "TotalEquity",
+]
+
+CASH_FLOW_ROWS = [
+    "NetIncome", "DepreciationAmortization", "StockBasedComp",
+    "ChangesInWorkingCapital", "CashFromOps",
+    "CapEx", "Acquisitions", "CashFromInvesting",
+    "DebtIssued", "DebtRepaid", "Dividends", "StockBuybacks",
+    "CashFromFinancing",
+]
+
+
+def extract_statement(facts: "CompanyFacts", rows: list[str], years: int) -> pd.DataFrame:
+    """Build a traditional statement (rows = canonical items) from CompanyFacts."""
+    data: dict[str, pd.Series] = {}
+    for row in rows:
+        tags = CONCEPT_MAP.get(row, [row])
+        data[row] = facts.annual_series(tags)
+    df = pd.DataFrame(data).T
+    if df.shape[1] == 0:
+        return df
+    df = df.reindex(sorted(df.columns), axis=1)
+    populated_cols = df.columns[df.notna().any(axis=0)]
+    df = df[populated_cols]
+    if years and df.shape[1] > years:
+        df = df.iloc[:, -years:]
+    return df
+
+
 __all__ = [
     "resolve_ticker",
     "fetch_company_facts",
@@ -243,4 +327,8 @@ __all__ = [
     "fetch_transcripts_hint",
     "CompanyFacts",
     "CONCEPT_MAP",
+    "INCOME_STATEMENT_ROWS",
+    "BALANCE_SHEET_ROWS",
+    "CASH_FLOW_ROWS",
+    "extract_statement",
 ]

@@ -63,6 +63,10 @@ class Assumptions:
     # Projection
     projection_years: int = 5
 
+    # Qualitative moat score (0–10, where 10 = Mag7-tier moat).
+    # Used by rating.compute_rating to moderate the DCF signal.
+    moat_score: int = 5
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -163,7 +167,27 @@ def derive_assumptions(
         cost_of_debt_pretax=round(rf + 0.015, 4),
         debt_weight=0.20,
         projection_years=5,
+        moat_score=_default_moat_for_sector(sector),
     )
+
+
+_MOAT_BY_SECTOR: dict[str, int] = {
+    "Technology": 7,
+    "Communication Services": 6,
+    "Consumer Defensive": 7,
+    "Healthcare": 6,
+    "Financial Services": 5,
+    "Consumer Cyclical": 4,
+    "Industrials": 5,
+    "Utilities": 5,
+    "Real Estate": 4,
+    "Energy": 3,
+    "Basic Materials": 3,
+}
+
+
+def _default_moat_for_sector(sector: str | None) -> int:
+    return _MOAT_BY_SECTOR.get(sector or "", 5)
 
 
 ASSUMPTION_HELP: dict[str, str] = {
@@ -180,6 +204,7 @@ ASSUMPTION_HELP: dict[str, str] = {
     "cost_of_debt_pretax": "Pre-tax cost of debt. Rf + credit spread is a simple, defensible proxy.",
     "debt_weight": "Debt / (Debt + Equity). Target capital structure, typically computed from the balance sheet.",
     "projection_years": "Length of the explicit-forecast period before the terminal-value stage.",
+    "moat_score": "Qualitative moat (0–10). Mag-7 / dominant franchises ≈ 9–10; replaceable commodity businesses ≈ 1–3. Used to moderate the DCF signal.",
 }
 
 
