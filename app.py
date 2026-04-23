@@ -85,6 +85,11 @@ ticker = st.sidebar.text_input("🔍 Ticker symbol", value="AAPL").strip().upper
 years = st.sidebar.slider("Years of historical data", 3, 10, 5, 1,
     help="Annual 10-K periods to pull from SEC EDGAR.")
 fetch = st.sidebar.button("⚡ Fetch data", type="primary", use_container_width=True)
+if st.sidebar.button("🗑️ Clear cache + refresh", help="Forces a fresh pull from SEC EDGAR and Yahoo Finance, discarding cached data."):
+    st.cache_data.clear()
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+    st.rerun()
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
 **How to use**

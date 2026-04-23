@@ -171,14 +171,26 @@ class CompanyFacts:
     raw: dict[str, Any] = field(default_factory=dict)
 
     def annual_series(self, concept_tags: list[str]) -> pd.Series:
-        """Return annual (FY) values indexed by fiscal year, **merged** across
-        every candidate tag. When multiple tags report a value for the same
-        fiscal year, keep the most recently filed one — which naturally prefers
-        the post-ASC-606 tag (e.g. RevenueFromContractWithCustomer...) over
-        legacy tags (e.g. Revenues) that issuers stopped using."""
+        """Return annual (FY) values merged across all candidate tags.
+
+        Root-cause of the "wrong segment revenue" bug:
+        The EDGAR company-facts API includes BOTH consolidated (non-dimensional)
+        AND per-segment (dimensional) values for the same tag/fy/filed combo.
+        The SEC distinguishes them via the ``frame`` field:
+          - Consolidated facts → have a ``frame`` like "CY2024Q3I" or "CY2024"
+          - Dimensional/segment facts → ``frame`` is absent or empty
+
+        Selection priority for each fiscal year:
+          1. Frame-tagged  > non-frame-tagged  (consolidated beats segment)
+          2. Most recently filed wins (handles restatements/amendments)
+          3. Largest absolute value wins (tie-breaker for same date+frame-status)
+        """
         us_gaap = self.raw.get("facts", {}).get("us-gaap", {})
         allowed_forms = ("10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A")
-        merged: dict[int, tuple[float, str]] = {}
+
+        # (val, filed_date, has_frame) keyed by fiscal year int
+        merged: dict[int, tuple[float, str, bool]] = {}
+
         for tag in concept_tags:
             node = us_gaap.get(tag)
             if not node:
@@ -192,6 +204,7 @@ class CompanyFacts:
                 if not units:
                     continue
                 unit_key = next(iter(units))
+
             for row in units[unit_key]:
                 if row.get("fp") != "FY" or row.get("form") not in allowed_forms:
                     continue
@@ -199,10 +212,29 @@ class CompanyFacts:
                 val = row.get("val")
                 if fy is None or val is None:
                     continue
+                fy = int(fy)
+                val = float(val)
                 filed = str(row.get("filed", ""))
-                prev = merged.get(int(fy))
-                if prev is None or filed > prev[1]:
-                    merged[int(fy)] = (float(val), filed)
+                has_frame = bool(row.get("frame", ""))
+
+                prev = merged.get(fy)
+                if prev is None:
+                    merged[fy] = (val, filed, has_frame)
+                    continue
+
+                prev_val, prev_filed, prev_frame = prev
+                # Rule 1: consolidated (framed) beats segment (unframed)
+                if has_frame and not prev_frame:
+                    merged[fy] = (val, filed, has_frame)
+                elif not has_frame and prev_frame:
+                    pass  # keep existing consolidated value
+                # Rule 2: newer filing wins (same frame status)
+                elif filed > prev_filed:
+                    merged[fy] = (val, filed, has_frame)
+                # Rule 3: same date + same frame → keep largest absolute value
+                elif filed == prev_filed and abs(val) > abs(prev_val):
+                    merged[fy] = (val, filed, has_frame)
+
         if not merged:
             return pd.Series(dtype="float64")
         return pd.Series(
