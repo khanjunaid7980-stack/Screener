@@ -45,10 +45,8 @@ def _moat_adjustment(moat: int, base_stars: int) -> int:
     """Nudge stars toward zero when moat disagrees with signal."""
     adj = round((moat - 5) / 2.5)  # in [-2, +2]
     if base_stars < 0 and adj > 0:
-        # High moat on an "overvalued" signal — bring toward zero (don't overshoot)
         return min(0, base_stars + adj) - base_stars
     if base_stars > 0 and adj < 0:
-        # Low moat on an "undervalued" signal — bring toward zero
         return max(0, base_stars + adj) - base_stars
     return 0
 
@@ -57,24 +55,28 @@ def compute_rating(upside_pct: float | None, moat_score: int = 5) -> dict:
     """Return dict with stars (-5..+5), label, colour, and html."""
     if upside_pct is None:
         return {
-            "stars": 0, "label": "No signal", "color": "#8b9ab5",
-            "html": _render_html(0, "No signal", "#8b9ab5", note="DCF not computed"),
-            "note": "DCF not computed",
+            "stars": 0, "label": "No Signal", "color": "#8b9ab5",
+            "html": _render_html(0, "No Signal", "#8b9ab5", note="DCF unavailable"),
+            "note": "DCF unavailable",
         }
     base = _upside_to_stars(upside_pct)
     moat_clamped = max(0, min(10, int(moat_score)))
     final = max(-5, min(5, base + _moat_adjustment(moat_clamped, base)))
 
     if final >= 3:
-        color, label = "#2da44e", _label_for_positive(final)
+        color = "#22c55e"
+        label = {5: "Strong Buy", 4: "Buy", 3: "Buy"}[final]
     elif final <= -3:
-        color, label = "#cf222e", _label_for_negative(final)
+        color = "#ef4444"
+        label = {-5: "Strong Short", -4: "Short", -3: "Short"}[final]
     elif final == 0:
-        color, label = "#8b9ab5", "Hold"
+        color = "#94a3b8"
+        label = "Hold"
     else:
-        color, label = "#d4a72c", _label_for_neutral(final)
+        color = "#eab308"
+        label = "Weak Buy" if final > 0 else "Weak Short"
 
-    note = f"DCF upside {upside_pct:.2%} · moat {moat_clamped}/10"
+    note = f"Upside {upside_pct*100:+.2f}% · Moat {moat_clamped}/10"
     return {
         "stars": final,
         "label": label,
@@ -84,45 +86,49 @@ def compute_rating(upside_pct: float | None, moat_score: int = 5) -> dict:
     }
 
 
-def _label_for_positive(stars: int) -> str:
-    return {5: "Strong Buy", 4: "Buy", 3: "Buy"}.get(stars, "Buy")
-
-
-def _label_for_negative(stars: int) -> str:
-    return {-5: "Strong Short", -4: "Short", -3: "Short"}.get(stars, "Short")
-
-
-def _label_for_neutral(stars: int) -> str:
-    if stars > 0:
-        return "Weak Buy"
-    if stars < 0:
-        return "Weak Short"
-    return "Hold"
-
-
 def _render_html(stars: int, label: str, color: str, note: str = "") -> str:
-    """Render 5 stars. Filled count = |stars|. Sign controls colour direction."""
-    filled = abs(stars)
-    sign = "+" if stars > 0 else ("−" if stars < 0 else "±")
+    """Render 5 stars (filled count = |stars|). Sign indicates direction.
 
-    star_html = ""
+    Direction symbol:
+        ↑ for buy/long, ↓ for short, • for hold/no-signal
+    """
+    filled = abs(stars)
+    if stars > 0:
+        direction = "↑"
+        sign_text = "Long"
+    elif stars < 0:
+        direction = "↓"
+        sign_text = "Short"
+    else:
+        direction = "•"
+        sign_text = "Neutral"
+
+    star_html_parts = []
     for i in range(1, 6):
         if i <= filled:
-            star_html += f'<span style="color:{color};text-shadow:0 0 8px {color}80;">★</span>'
+            star_html_parts.append(
+                f'<span style="color:{color};text-shadow:0 0 6px {color}66;'
+                f'font-size:1.45rem;line-height:1;">★</span>'
+            )
         else:
-            star_html += '<span style="color:#2a3550;">★</span>'
+            star_html_parts.append(
+                '<span style="color:#2a3550;font-size:1.45rem;line-height:1;">★</span>'
+            )
+    star_html = "".join(star_html_parts)
 
-    return f"""
-    <div style="display:flex;align-items:center;gap:14px;">
-      <div style="font-size:1.6rem;letter-spacing:2px;line-height:1;">{star_html}</div>
-      <div style="display:flex;flex-direction:column;gap:2px;">
-        <div style="font-weight:700;font-size:0.95rem;color:{color};letter-spacing:0.04em;text-transform:uppercase;">
-          {label} <span style="color:#8b9ab5;font-weight:500;">({sign}{filled}/5)</span>
-        </div>
-        <div style="font-size:0.72rem;color:#5c7099;">{note}</div>
-      </div>
-    </div>
-    """
+    return (
+        f'<div style="display:flex;flex-direction:column;gap:6px;">'
+        f'<div style="display:flex;align-items:center;gap:10px;">'
+        f'<div style="display:flex;gap:3px;">{star_html}</div>'
+        f'<div style="background:{color}22;color:{color};border:1px solid {color}55;'
+        f'padding:2px 10px;border-radius:14px;font-size:0.72rem;font-weight:700;'
+        f'letter-spacing:0.05em;text-transform:uppercase;white-space:nowrap;">'
+        f'{direction} {label}</div>'
+        f'</div>'
+        f'<div style="font-size:0.72rem;color:#8b9ab5;font-weight:500;">'
+        f'{sign_text} signal · {note}</div>'
+        f'</div>'
+    )
 
 
 __all__ = ["compute_rating"]
