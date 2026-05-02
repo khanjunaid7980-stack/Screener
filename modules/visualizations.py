@@ -34,20 +34,19 @@ def revenue_and_margins(fin: pd.DataFrame) -> go.Figure:
 
 def roic_vs_wacc(fin: pd.DataFrame, wacc: float) -> go.Figure:
     fig = go.Figure()
-    if all(k in fin.index for k in ("OperatingIncome", "TotalAssets", "TotalLiabilities", "CashAndEquivalents")):
+    # Need EBIT and at least one of (equity, debt) to compute invested capital.
+    if "OperatingIncome" in fin.index:
         ebit = fin.loc["OperatingIncome"].astype(float)
-        # Invested capital ~= Total assets - current liabilities - excess cash.
-        # Approximation: Total assets - Total liabilities + interest-bearing debt.
-        debt = (
-            fin.loc["LongTermDebt"].astype(float).fillna(0)
-            if "LongTermDebt" in fin.index else pd.Series(0.0, index=ebit.index)
-        ) + (
-            fin.loc["ShortTermDebt"].astype(float).fillna(0)
-            if "ShortTermDebt" in fin.index else pd.Series(0.0, index=ebit.index)
-        )
-        equity = fin.loc["TotalEquity"].astype(float) if "TotalEquity" in fin.index else pd.Series(0.0, index=ebit.index)
+        debt = pd.Series(0.0, index=ebit.index)
+        if "LongTermDebt" in fin.index:
+            debt = debt.add(fin.loc["LongTermDebt"].astype(float).fillna(0), fill_value=0)
+        if "ShortTermDebt" in fin.index:
+            debt = debt.add(fin.loc["ShortTermDebt"].astype(float).fillna(0), fill_value=0)
+        equity = fin.loc["TotalEquity"].astype(float).fillna(0) if "TotalEquity" in fin.index else pd.Series(0.0, index=ebit.index)
         cash = fin.loc["CashAndEquivalents"].astype(float).fillna(0) if "CashAndEquivalents" in fin.index else pd.Series(0.0, index=ebit.index)
-        invested = (equity.fillna(0) + debt - cash).replace(0, np.nan)
+        # Invested capital = Equity + Debt − Excess Cash (Damodaran)
+        invested = (equity + debt - cash).replace(0, np.nan)
+        # Effective tax rate
         tax_rate = 0.21
         if "IncomeTaxExpense" in fin.index and "PreTaxIncome" in fin.index:
             tx = fin.loc["IncomeTaxExpense"].astype(float)
@@ -56,10 +55,14 @@ def roic_vs_wacc(fin: pd.DataFrame, wacc: float) -> go.Figure:
             ratios = ratios[(ratios > 0) & (ratios < 0.5)]
             if not ratios.empty:
                 tax_rate = float(ratios.tail(3).mean())
-        roic = ((ebit * (1 - tax_rate)) / invested) * 100
-        fig.add_trace(go.Bar(x=roic.index.astype(str), y=roic.values, name="ROIC (%)", marker_color="#1f6feb"))
-        fig.add_hline(y=wacc * 100, line_dash="dash", line_color="#cf222e", annotation_text=f"WACC = {wacc:.2%}", annotation_position="top left")
-    fig.update_layout(title="ROIC vs. WACC", template="plotly_dark", paper_bgcolor="#141a2a", plot_bgcolor="#141a2a", font=dict(color="#e6edf3"), yaxis_title="%", hovermode="x unified")
+        nopat = ebit * (1 - tax_rate)
+        roic = (nopat / invested) * 100
+        roic = roic.replace([np.inf, -np.inf], np.nan).dropna()
+        if not roic.empty:
+            colors = ["#22c55e" if v >= wacc * 100 else "#ef4444" for v in roic.values]
+            fig.add_trace(go.Bar(x=roic.index.astype(str), y=roic.values, name="ROIC (%)", marker_color=colors))
+            fig.add_hline(y=wacc * 100, line_dash="dash", line_color="#4f8cff", annotation_text=f"WACC = {wacc*100:.2f}%", annotation_position="top left")
+    fig.update_layout(title="ROIC vs. WACC — Value Creation", template="plotly_dark", paper_bgcolor="#141a2a", plot_bgcolor="#141a2a", font=dict(color="#e6edf3"), yaxis_title="%", hovermode="x unified")
     return fig
 
 

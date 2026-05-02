@@ -10,6 +10,8 @@ from modules.assumptions import ASSUMPTION_HELP, Assumptions, derive_assumptions
 from modules.dcf import run_dcf, sensitivity_grid
 from modules.wacc import compute_wacc, infer_debt_weight_from_balance_sheet
 from modules.rating import compute_rating
+from modules.ratios import compute_all as compute_all_ratios, by_category
+from modules.moat import derive_moat
 
 st.set_page_config(
     page_title="Financial Screener",
@@ -250,6 +252,10 @@ def _init_assumptions(data: dict) -> None:
         dw = infer_debt_weight_from_balance_sheet(td, snap.market_cap)
         if dw is not None:
             a.debt_weight = round(dw, 4)
+    # Auto-derive moat from data quality (overrides sector-default seed)
+    moat_breakdown = derive_moat(fin)
+    a.moat_score = moat_breakdown.score
+    st.session_state["moat_breakdown"] = moat_breakdown
     st.session_state["assumptions"] = a
     st.session_state["_ticker_cik"] = data["cik"]
 
@@ -389,9 +395,9 @@ k5.metric("Upside vs market", _fmt_pct_signed(upside_pct), delta=upside_delta)
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_data, tab_statements, tab_assume, tab_wacc, tab_dcf, tab_viz, tab_guide = st.tabs([
-    "📂 Data", "📑 Financial Statements", "🎯 Assumptions", "⚖️ WACC",
-    "💰 DCF", "📊 Visualizations", "📖 Guide"
+tab_data, tab_statements, tab_ratios, tab_assume, tab_wacc, tab_dcf, tab_viz, tab_guide = st.tabs([
+    "📂 Data", "📑 Financial Statements", "📐 Ratios",
+    "🎯 Assumptions", "⚖️ WACC", "💰 DCF", "📊 Visualizations", "📖 Guide"
 ])
 
 # ───── helpers for statement tables (2-decimal $B display) ───────────────────
@@ -478,6 +484,64 @@ with tab_statements:
 
     st.caption("💡 Values ≥ $1M are shown in billions (2 decimals). EPS shown per share.")
 
+# ────────────────────────── RATIOS TAB ───────────────────────────────────────
+with tab_ratios:
+    st.markdown('<div class="section-title">Financial & operating ratios</div>', unsafe_allow_html=True)
+    st.caption("Liquidity · Solvency · Profitability · Efficiency · Valuation · Growth · Cash Flow Quality. Hover the **(i)** on each metric for the formula and meaning.")
+
+    if fin.empty:
+        st.warning("No data — fetch a ticker first.")
+    else:
+        all_ratios = compute_all_ratios(fin, market_cap=snap.market_cap, price=snap.price)
+        grouped = by_category(all_ratios)
+
+        category_emoji = {
+            "Liquidity": "💧", "Solvency": "🏛️", "Profitability": "📈",
+            "Efficiency": "⚙️", "Valuation": "💎", "Growth": "🚀",
+            "Cash Flow Quality": "💵",
+        }
+        category_order = ["Liquidity", "Solvency", "Profitability", "Efficiency",
+                          "Valuation", "Growth", "Cash Flow Quality"]
+
+        for cat in category_order:
+            if cat not in grouped:
+                continue
+            ratios_in_cat = grouped[cat]
+            emoji = category_emoji.get(cat, "•")
+            st.markdown(f"### {emoji} {cat}")
+            cols = st.columns(3)
+            for i, r in enumerate(ratios_in_cat):
+                with cols[i % 3]:
+                    # Build help text combining formula + meaning + good
+                    help_text = (
+                        f"Formula: {r.formula}\n\n"
+                        f"What it measures: {r.meaning}\n\n"
+                        f"Healthy range: {r.good}"
+                    )
+                    label = f"{r.name} ⓘ"
+                    val_str = r.fmt()
+
+                    # 5-yr trend sparkline-style indicator using the most recent values
+                    delta_str = None
+                    if not r.series.empty:
+                        s = r.series.dropna()
+                        if len(s) >= 2:
+                            curr = float(s.iloc[-1])
+                            prev = float(s.iloc[-2])
+                            if np.isfinite(curr) and np.isfinite(prev):
+                                if r.unit == "%":
+                                    diff = (curr - prev) * 100
+                                    delta_str = f"{diff:+.2f} pp YoY"
+                                elif r.unit == "days":
+                                    diff = curr - prev
+                                    delta_str = f"{diff:+.1f} days YoY"
+                                elif r.unit == "x":
+                                    diff = curr - prev
+                                    delta_str = f"{diff:+.2f}x YoY"
+
+                    st.metric(label=label, value=val_str, delta=delta_str, help=help_text)
+            st.markdown("")
+
 # ────────────────────────── ASSUMPTIONS TAB ──────────────────────────────────
 with tab_assume:
     st.markdown('<div class="section-title">Assumptions — pre-filled by ML, fully editable</div>', unsafe_allow_html=True)
@@ -506,6 +570,7 @@ with tab_assume:
 
     st.markdown("---")
     st.markdown("**🏰 Qualitative Moat Score**")
+    moat_breakdown = st.session_state.get("moat_breakdown")
     mc1, mc2 = st.columns([3,1])
     with mc1:
         assumptions.moat_score = int(st.slider(
@@ -514,7 +579,6 @@ with tab_assume:
             help=ASSUMPTION_HELP["moat_score"], key="moat",
         ))
     with mc2:
-        # Color-graded moat chip
         m = assumptions.moat_score
         if m >= 8:    moat_color, moat_label = "#22c55e", "Wide"
         elif m >= 6:  moat_color, moat_label = "#4f8cff", "Strong"
@@ -530,6 +594,19 @@ with tab_assume:
             f"</div>",
             unsafe_allow_html=True,
         )
+
+    if moat_breakdown and moat_breakdown.components:
+        with st.expander(f"🔍 Auto-derived moat breakdown — {moat_breakdown.rationale}"):
+            st.markdown(moat_breakdown.to_html(), unsafe_allow_html=True)
+            st.caption(
+                "Each component scores 0–2 from your company's actual data. "
+                "Sum becomes the suggested moat score. "
+                "You can override with the slider above — the slider value is what gets used in the rating."
+            )
+            if st.button("↻ Reset moat to auto-derived", key="reset_moat"):
+                assumptions.moat_score = moat_breakdown.score
+                st.session_state["assumptions"] = assumptions
+                st.rerun()
 
     st.session_state["assumptions"] = assumptions
 
