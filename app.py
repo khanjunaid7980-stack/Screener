@@ -12,6 +12,7 @@ from modules.wacc import compute_wacc, infer_debt_weight_from_balance_sheet
 from modules.rating import compute_rating
 from modules.ratios import compute_all as compute_all_ratios, by_category
 from modules.moat import derive_moat
+from modules.monte_carlo import run_monte_carlo
 
 st.set_page_config(
     page_title="Financial Screener",
@@ -395,9 +396,10 @@ k5.metric("Upside vs market", _fmt_pct_signed(upside_pct), delta=upside_delta)
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_data, tab_statements, tab_ratios, tab_assume, tab_wacc, tab_dcf, tab_viz, tab_guide = st.tabs([
+tab_data, tab_statements, tab_ratios, tab_assume, tab_wacc, tab_dcf, tab_viz, tab_mc, tab_guide = st.tabs([
     "📂 Data", "📑 Financial Statements", "📐 Ratios",
-    "🎯 Assumptions", "⚖️ WACC", "💰 DCF", "📊 Visualizations", "📖 Guide"
+    "🎯 Assumptions", "⚖️ WACC", "💰 DCF", "📊 Visualizations",
+    "🎲 Monte Carlo", "📖 Guide"
 ])
 
 # ───── helpers for statement tables (2-decimal $B display) ───────────────────
@@ -781,43 +783,510 @@ with tab_viz:
         if dcf_res:
             st.plotly_chart(viz.dcf_projection_chart(dcf_res.projections), use_container_width=True)
 
+# ────────────────────────── MONTE CARLO TAB ──────────────────────────────────
+with tab_mc:
+    st.markdown('<div class="section-title">Monte Carlo Simulation</div>', unsafe_allow_html=True)
+
+    if "Revenue" not in fin.index or fin.loc["Revenue"].dropna().empty:
+        st.error("❌ No Revenue data found. Monte Carlo requires revenue. Fetch a ticker first.")
+    else:
+        st.markdown(
+            "Run thousands of DCF scenarios by sampling key assumptions from probability "
+            "distributions. Instead of a single fair-value point estimate, you get a "
+            "**full distribution** of outcomes — revealing how sensitive the valuation is "
+            "to uncertainty in each input."
+        )
+
+        mc_base_rev = float(fin.loc["Revenue"].dropna().iloc[-1])
+        mc_shares   = float(st.session_state.get("shares_override", _derive_shares_and_debt(fin, snap)[0]))
+        mc_net_debt = float(st.session_state.get("net_debt_override", _derive_shares_and_debt(fin, snap)[1]))
+        mc_wacc     = wacc_result.wacc
+
+        # ── simulation parameters ───────────────────────────────────────────
+        st.markdown("#### Simulation settings")
+        mc_col1, mc_col2 = st.columns([1, 2])
+        with mc_col1:
+            n_sims = st.select_slider(
+                "Number of simulations",
+                options=[500, 1000, 2000, 5000, 10000],
+                value=2000,
+                help="More simulations = smoother distribution but slower.",
+            )
+        with mc_col2:
+            st.caption(
+                "Each simulation independently draws revenue growth, operating margin, "
+                "terminal growth, WACC, CapEx%, and D&A% from normal distributions "
+                "centred on your Assumptions tab values."
+            )
+
+        st.markdown("#### Input uncertainty (standard deviations)")
+        st.caption(
+            "These σ values control how wide each input's distribution is. "
+            "A larger σ means more uncertainty and a wider range of outcomes. "
+            "Values shown are percentage points (pp) or percent of the mean (%)."
+        )
+        sd1, sd2, sd3 = st.columns(3)
+        sd4, sd5, sd6 = st.columns(3)
+        with sd1:
+            g_std_pct = st.number_input(
+                "Revenue growth σ (pp)",
+                min_value=0.5, max_value=30.0,
+                value=float(round(max(abs(assumptions.revenue_growth_rate) * 0.30, 0.02) * 100, 1)),
+                step=0.5, format="%.1f",
+                help="Standard deviation for revenue growth rate, in percentage points.",
+            )
+        with sd2:
+            om_std_pct = st.number_input(
+                "Operating margin σ (pp)",
+                min_value=0.5, max_value=20.0,
+                value=float(round(max(abs(assumptions.operating_margin) * 0.20, 0.02) * 100, 1)),
+                step=0.5, format="%.1f",
+                help="Standard deviation for operating margin, in percentage points.",
+            )
+        with sd3:
+            tg_std_pct = st.number_input(
+                "Terminal growth σ (pp)",
+                min_value=0.1, max_value=3.0,
+                value=0.5,
+                step=0.1, format="%.1f",
+                help="Standard deviation for terminal growth rate, in percentage points.",
+            )
+        with sd4:
+            w_std_pct = st.number_input(
+                "WACC σ (pp)",
+                min_value=0.1, max_value=5.0,
+                value=1.0,
+                step=0.1, format="%.1f",
+                help="Standard deviation for WACC, in percentage points.",
+            )
+        with sd5:
+            cx_std_pct = st.number_input(
+                "CapEx% σ (pp)",
+                min_value=0.1, max_value=10.0,
+                value=float(round(max(abs(assumptions.capex_pct_revenue) * 0.20, 0.005) * 100, 1)),
+                step=0.1, format="%.1f",
+                help="Standard deviation for CapEx as % of revenue.",
+            )
+        with sd6:
+            da_std_pct = st.number_input(
+                "D&A% σ (pp)",
+                min_value=0.1, max_value=5.0,
+                value=float(round(max(abs(assumptions.da_pct_revenue) * 0.15, 0.003) * 100, 1)),
+                step=0.1, format="%.1f",
+                help="Standard deviation for D&A as % of revenue.",
+            )
+
+        st.markdown("---")
+        run_mc = st.button("▶ Run Monte Carlo", type="primary", key="run_mc_btn")
+
+        if run_mc or st.session_state.get("mc_result") is not None:
+            if run_mc:
+                with st.spinner(f"Running {n_sims:,} simulations…"):
+                    mc_res = run_monte_carlo(
+                        base_revenue=mc_base_rev,
+                        assumptions=assumptions,
+                        wacc_base=mc_wacc,
+                        shares_outstanding=mc_shares,
+                        net_debt=mc_net_debt,
+                        current_price=snap.price,
+                        n_sims=n_sims,
+                        growth_std=g_std_pct / 100,
+                        margin_std=om_std_pct / 100,
+                        terminal_g_std=tg_std_pct / 100,
+                        wacc_std=w_std_pct / 100,
+                        capex_std=cx_std_pct / 100,
+                        da_std=da_std_pct / 100,
+                    )
+                st.session_state["mc_result"] = mc_res
+            else:
+                mc_res = st.session_state["mc_result"]
+
+            if mc_res.n_valid == 0:
+                st.error("All simulations produced undefined values. Check your assumptions — WACC may be too close to terminal growth rate.")
+            else:
+                # ── summary metrics ──────────────────────────────────────────
+                st.markdown("#### Simulation results")
+                st.caption(f"{mc_res.n_valid:,} of {mc_res.n_total:,} simulations produced valid results.")
+
+                sm1, sm2, sm3, sm4, sm5 = st.columns(5)
+                sm1.metric("Bear (P5)",   f"${mc_res.p5:,.2f}")
+                sm2.metric("P25",         f"${mc_res.p25:,.2f}")
+                sm3.metric("Base (P50)",  f"${mc_res.median:,.2f}")
+                sm4.metric("P75",         f"${mc_res.p75:,.2f}")
+                sm5.metric("Bull (P95)",  f"${mc_res.p95:,.2f}")
+
+                # ── probability statements ───────────────────────────────────
+                if snap.price and mc_res.prob_undervalued is not None:
+                    pa, pb, pc = st.columns(3)
+                    pct_uv  = mc_res.prob_undervalued * 100
+                    pct_u20 = (mc_res.prob_upside_20  or 0) * 100
+                    pct_d20 = (mc_res.prob_downside_20 or 0) * 100
+                    col_uv  = "#22c55e" if pct_uv > 60 else "#eab308" if pct_uv > 40 else "#ef4444"
+                    col_d20 = "#ef4444" if pct_d20 > 30 else "#eab308"
+                    pa.markdown(
+                        f'<div style="background:#141a2a;border:1px solid #1f2d45;border-radius:12px;padding:16px;text-align:center;">'
+                        f'<div style="font-size:0.7rem;color:#7a8aa6;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;">P(Undervalued)</div>'
+                        f'<div style="font-size:2rem;font-weight:800;color:{col_uv};margin-top:4px;">{pct_uv:.0f}%</div>'
+                        f'<div style="font-size:0.75rem;color:#7a8aa6;margin-top:2px;">Fair value > ${snap.price:,.2f}</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                    pb.markdown(
+                        f'<div style="background:#141a2a;border:1px solid #1f2d45;border-radius:12px;padding:16px;text-align:center;">'
+                        f'<div style="font-size:0.7rem;color:#7a8aa6;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;">P(>20% Upside)</div>'
+                        f'<div style="font-size:2rem;font-weight:800;color:#22c55e;margin-top:4px;">{pct_u20:.0f}%</div>'
+                        f'<div style="font-size:0.75rem;color:#7a8aa6;margin-top:2px;">Fair value > ${snap.price*1.20:,.2f}</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+                    pc.markdown(
+                        f'<div style="background:#141a2a;border:1px solid #1f2d45;border-radius:12px;padding:16px;text-align:center;">'
+                        f'<div style="font-size:0.7rem;color:#7a8aa6;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;">P(>20% Downside)</div>'
+                        f'<div style="font-size:2rem;font-weight:800;color:{col_d20};margin-top:4px;">{pct_d20:.0f}%</div>'
+                        f'<div style="font-size:0.75rem;color:#7a8aa6;margin-top:2px;">Fair value < ${snap.price*0.80:,.2f}</div>'
+                        f'</div>', unsafe_allow_html=True
+                    )
+
+                # ── histogram ────────────────────────────────────────────────
+                st.markdown("")
+                fig_mc = viz.monte_carlo_histogram(
+                    mc_res.simulations,
+                    current_price=snap.price,
+                    p5=mc_res.p5,
+                    p50=mc_res.median,
+                    p95=mc_res.p95,
+                )
+                st.plotly_chart(fig_mc, use_container_width=True)
+
+                # ── percentile table ─────────────────────────────────────────
+                with st.expander("📋 Full percentile table"):
+                    pct_df = mc_res.percentile_table()
+                    st.dataframe(pct_df, use_container_width=True)
+
+                # ── distribution stats ───────────────────────────────────────
+                with st.expander("📐 Distribution statistics"):
+                    mean_v = mc_res.mean
+                    std_v  = mc_res.std
+                    skew_v = float(np.mean(((mc_res.simulations - mean_v) / std_v) ** 3)) if std_v > 0 else 0.0
+                    kurt_v = float(np.mean(((mc_res.simulations - mean_v) / std_v) ** 4)) - 3 if std_v > 0 else 0.0
+                    st.markdown(f"""
+| Statistic | Value |
+|---|---|
+| Mean fair value | ${mean_v:,.2f} |
+| Standard deviation | ${std_v:,.2f} |
+| Min (of valid sims) | ${mc_res.simulations.min():,.2f} |
+| Max (of valid sims) | ${mc_res.simulations.max():,.2f} |
+| Skewness | {skew_v:.3f} |
+| Excess kurtosis | {kurt_v:.3f} |
+""")
+                    st.caption(
+                        "Positive skew means the distribution has a longer right tail (more extreme bull "
+                        "scenarios than bear). High kurtosis (>0) indicates fat tails — unusually extreme "
+                        "outcomes are more frequent than a normal distribution would suggest."
+                    )
+
 # ────────────────────────── GUIDE TAB ────────────────────────────────────────
 with tab_guide:
-    st.markdown('<div class="section-title">User guide</div>', unsafe_allow_html=True)
-    st.markdown("""
-### Rating system (header banner)
+    st.markdown('<div class="section-title">User Guide</div>', unsafe_allow_html=True)
 
-The investment rating combines **DCF upside** with your **moat score** (0–10):
+    with st.expander("🚀 Quick Start", expanded=True):
+        st.markdown("""
+1. **Enter a ticker** in the sidebar (e.g. `AAPL`, `MSFT`, `NVDA`) and click **Load Data**.
+2. The tool fetches 10 years of financials from **SEC EDGAR** (free, no API key) and live
+   market data from **yfinance**.
+3. All assumptions are **pre-filled automatically** — scroll through the tabs to review them.
+4. The **header banner** (always visible) shows current price, DCF fair value, and your
+   investment rating. Every time you change an assumption the banner updates.
+5. Use the **Monte Carlo tab** to stress-test the valuation against input uncertainty.
 
-| Stars | Color | Label | Meaning |
-|---|---|---|---|
-| ★★★★★ +5 | Green | Strong Buy | DCF says >+45% upside |
-| ★★★★ +4 / ★★★ +3 | Green | Buy | Material upside |
-| ★★ +2 / ★ +1 | Yellow | Weak Buy | Marginal upside |
-| 0 | Gray | Hold | Roughly fairly priced |
-| ★ −1 / ★★ −2 | Yellow | Weak Short | Marginal overvaluation |
-| ★★★ −3 / ★★★★ −4 | Red | Short | Material overvaluation |
-| ★★★★★ −5 | Red | Strong Short | DCF says <−45% downside |
+> **No logins, no subscriptions, no API keys required.** All data is free and open.
+""")
 
-**Moat adjustment:** a high moat (≥8) pulls a "Short" rating toward zero — a
-DCF alone can underestimate premium franchises with pricing power. A low moat
-(≤3) pulls a "Buy" rating toward zero — apparent upside is less reliable
-without a durable edge.
+    with st.expander("📂 Data Tab"):
+        st.markdown("""
+Shows the raw historical financial data fetched from SEC EDGAR XBRL API.
 
-### Number formatting
+| Row | Description |
+|---|---|
+| Revenue | Net sales / total revenue |
+| GrossProfit | Revenue − Cost of goods sold |
+| OperatingIncome | EBIT (Earnings Before Interest & Tax) |
+| NetIncome | Bottom-line profit |
+| EPS | Earnings per share (diluted) |
+| TotalAssets | All assets on the balance sheet |
+| TotalDebt | Long-term + short-term interest-bearing debt |
+| CashAndEquivalents | Cash + short-term investments |
+| CashFromOps | Operating cash flow (CFO) |
+| FreeCashFlow | CFO − CapEx |
 
-- All ratios display as percentages with 2-decimal precision (`34.85%`).
-- Percent inputs accept the percent form: type `34.85` to mean 34.85%.
-- Large numbers (shares, debt) display with thousand separators.
-- Negative upside is shown in red; positive upside in green.
+**Tips:**
+- Use the **History** slider in the sidebar to show 3–10 years.
+- If a row shows "—" the company did not report that XBRL tag; this is normal for some sectors.
+- Revenue is always sourced from the **consolidated** XBRL fact (frame-tagged), never a product segment.
+""")
 
-### Financial Statements tab
-Reconstructs Income Statement, Balance Sheet, and Cash Flow Statement from
-SEC XBRL us-gaap tags as reported by the issuer. Values ≥ $1M are shown in
-billions; EPS is shown per-share.
+    with st.expander("📑 Financial Statements Tab"):
+        st.markdown("""
+Reconstructs the three core financial statements from SEC XBRL us-gaap tags
+exactly as filed in the company's 10-K.
 
-### Free hosting (Streamlit Community Cloud)
-1. Push this repo to GitHub.
-2. Sign in at [streamlit.io/cloud](https://streamlit.io/cloud) with GitHub.
-3. **New app** → pick repo → main file = `app.py` → **Deploy**.
+- **Income Statement** — Revenue → Gross Profit → EBIT → EBT → Net Income → EPS
+- **Balance Sheet** — Current assets / liabilities, PP&E, Goodwill, total equity
+- **Cash Flow Statement** — CFO, CFI, CFF, Free Cash Flow
+
+Values are displayed in **billions of dollars** (two decimal places).
+EPS is shown per share.
+
+> Data is sourced directly from EDGAR — no third-party data vendors involved.
+""")
+
+    with st.expander("📐 Ratios Tab"):
+        st.markdown("""
+40+ ratios organised into seven categories. Each metric shows:
+- The **latest** value
+- **Year-on-year delta** (green = improving, red = deteriorating)
+- **(i) tooltip** — hover to see the exact formula, what the ratio measures, and a healthy range
+
+#### Category Guide
+
+| Category | Key Ratios | What they tell you |
+|---|---|---|
+| **Liquidity** | Current Ratio, Quick Ratio, Cash Ratio | Can the company pay near-term obligations? |
+| **Solvency** | D/E, Debt/EBITDA, Interest Coverage | How leveraged is the company? Can it service debt? |
+| **Profitability** | Gross/Operating/Net Margin, ROE, ROA, ROIC | How efficiently does it turn revenue into profit? |
+| **Efficiency** | Asset Turnover, Inventory Days, Receivables Days | How well does it use its assets? |
+| **Valuation** | P/E, P/S, P/B, EV/EBITDA, FCF Yield | What is the market paying relative to fundamentals? |
+| **Growth** | Revenue/EPS/FCF growth (YoY, 3yr CAGR) | How fast is the business expanding? |
+| **Cash Flow Quality** | CFO/NI, FCF/Revenue, Capex Intensity | Are earnings backed by real cash? |
+
+**ROIC** (Return on Invested Capital) is the most important single metric for moat assessment.
+A company with sustained ROIC > WACC is compounding shareholder value.
+""")
+
+    with st.expander("🎯 Assumptions Tab"):
+        st.markdown("""
+All DCF and WACC inputs live here. They are **pre-filled by a blend of**:
+- 60% historical trend (trailing 5-year averages from EDGAR data)
+- 40% sector benchmark (technology, healthcare, industrials, etc.)
+
+#### Key Inputs
+
+| Input | Description | Typical range |
+|---|---|---|
+| Revenue growth | Expected annual revenue growth over the projection period | 2%–30% |
+| Operating margin | EBIT / Revenue — what fraction of revenue becomes operating profit | 5%–40% |
+| Tax rate | Effective tax rate on EBIT | 15%–28% |
+| CapEx % revenue | Capital expenditure as % of revenue | 2%–20% |
+| D&A % revenue | Depreciation & amortisation as % of revenue | 2%–10% |
+| NWC % revenue | Δ Net Working Capital as % of revenue change | 0%–15% |
+| Terminal growth | Perpetual growth rate after the explicit period — should not exceed GDP | 1%–3% |
+| Projection years | Explicit DCF forecast horizon | 3–10 years |
+| Moat score | 0–10 rating of competitive durability (auto-derived, editable) | 0–10 |
+
+#### Moat Score (0–10)
+The moat is **auto-derived** from five quantitative components (each 0–2 points):
+
+| Component | Measures |
+|---|---|
+| ROIC vs WACC | Does the company create economic value? |
+| Gross-margin power | High and stable gross margins signal pricing power |
+| Operating margin | Scale economics and cost control |
+| Growth consistency | Durable, low-volatility revenue growth |
+| Cash conversion | CFO/Net Income — are earnings real? |
+
+You can override the slider at any time. The slider value (not the auto-score) is used in the rating.
+
+#### Import / Export
+- **Export JSON** — save your assumptions to a file for reproducibility
+- **Import JSON** — restore a previously saved set of assumptions
+- **Reset to ML defaults** — re-derives assumptions from the latest data
+""")
+
+    with st.expander("⚖️ WACC Tab"):
+        st.markdown(r"""
+**Weighted Average Cost of Capital** is the discount rate applied in the DCF.
+A higher WACC means future cash flows are discounted more aggressively → lower valuation.
+
+$$K_e = R_f + \beta \times ERP$$
+
+$$WACC = W_e \cdot K_e + W_d \cdot K_d \cdot (1 - t)$$
+
+| Input | Source | Notes |
+|---|---|---|
+| Risk-free rate (Rf) | 10-yr US Treasury yield | Pulled from EDGAR/yfinance |
+| Beta (β) | yfinance — 5yr monthly regression vs S&P 500 | Estimated if not available |
+| Equity Risk Premium | Historical average ~5.5% | Damodaran estimate |
+| Cost of Debt | Pre-tax yield on debt | Estimated from interest expense / total debt |
+| Debt Weight | D / (D + Market Cap) | From balance sheet + live market cap |
+
+**Rule of thumb ranges:**
+
+| Sector | Typical WACC |
+|---|---|
+| Big tech (low beta, strong FCF) | 8%–10% |
+| Consumer staples | 7%–9% |
+| Industrial / cyclical | 9%–12% |
+| Biotech / early-stage | 12%–18% |
+""")
+
+    with st.expander("💰 DCF Tab"):
+        st.markdown(r"""
+**Discounted Cash Flow** valuation projects Free Cash Flow to the Firm (FCFF)
+over the explicit period and adds a terminal value.
+
+#### FCFF Bridge (per year)
+
+| Line | Formula |
+|---|---|
+| Revenue_t | Revenue_{t-1} × (1 + g) |
+| EBIT_t | Revenue_t × Operating Margin |
+| NOPAT_t | EBIT_t × (1 − Tax Rate) |
+| + D&A | Revenue_t × D&A% |
+| − CapEx | Revenue_t × CapEx% |
+| − ΔNWC | (Revenue_t − Revenue_{t-1}) × NWC% |
+| = **FCFF_t** | |
+
+#### Terminal Value (Gordon Growth)
+
+$$TV = \frac{FCFF_{N+1}}{WACC - g_{terminal}}$$
+
+$$EV = \sum_{t=1}^{N} \frac{FCFF_t}{(1+WACC)^t} + \frac{TV}{(1+WACC)^N}$$
+
+$$\text{Equity Value} = EV - \text{Net Debt}$$
+
+$$\text{Fair Value/Share} = \frac{\text{Equity Value}}{\text{Shares Outstanding}}$$
+
+#### Sensitivity Heatmap
+A 5×5 grid showing fair value per share across ±200bps of WACC and ±100bps of
+terminal growth. Green cells = undervalued vs current price, red cells = overvalued.
+
+**Important:** WACC must exceed terminal growth rate. If WACC ≤ g, the Gordon
+Growth model is undefined (denominator ≤ 0) — the tool will show an error.
+""")
+
+    with st.expander("📊 Visualizations Tab"):
+        st.markdown("""
+Six interactive Plotly charts:
+
+| Chart | What to look for |
+|---|---|
+| Revenue & Margins | Revenue growth trend; margin expansion/contraction |
+| ROIC vs WACC | Years where ROIC > WACC (green bars) = value creation |
+| EBIT vs Market Cap | Market cap premium relative to operating profit |
+| Cash Flow Breakdown | CFO vs CapEx vs FCF — is the company a cash machine? |
+| Leverage & Liquidity | Debt/Equity trend; current ratio |
+| Price vs DCF Fair Value | How current market price compares to your DCF estimate |
+
+All charts respond to updated assumptions automatically.
+""")
+
+    with st.expander("🎲 Monte Carlo Tab"):
+        st.markdown("""
+Monte Carlo simulation replaces the single-point DCF with a **probability distribution**
+of fair-value outcomes by sampling key inputs from normal distributions.
+
+#### What gets sampled
+
+| Input | Default σ | Why it matters |
+|---|---|---|
+| Revenue growth | 30% of mean (min 2pp) | The single largest driver of long-term value |
+| Operating margin | 20% of mean (min 2pp) | Determines how much revenue becomes profit |
+| Terminal growth | 0.5 pp | Small changes create large terminal value swings |
+| WACC | 1.0 pp | Discount rate uncertainty compounds over time |
+| CapEx% | 20% of mean | Capital intensity affects FCF quality |
+| D&A% | 15% of mean | Non-cash buffer to FCFF |
+
+Each simulation independently draws all six inputs, enforces WACC > terminal_g + 0.5pp,
+and runs a full DCF. Outlier results (outside ±20× median) are discarded.
+
+#### Interpreting results
+
+| Metric | Meaning |
+|---|---|
+| **P5 (Bear)** | Only 5% of scenarios produce a lower fair value — a stressed downside |
+| **P50 (Base)** | The median outcome — 50% of scenarios above and below |
+| **P95 (Bull)** | Only 5% of scenarios produce a higher fair value |
+| **P(Undervalued)** | % of scenarios where fair value > current market price |
+| **P(>20% Upside)** | % of scenarios where the stock is ≥20% undervalued |
+| **Skewness** | +ve = more tail risk on the upside; −ve = more tail risk on the downside |
+
+**Rule of thumb:** if P(Undervalued) > 70% and the moat score is ≥7, the conviction
+level on the buy signal is high. If P(Undervalued) < 40% even in the base case, the
+current price has limited margin of safety.
+
+#### Adjusting uncertainty
+Increase a σ to reflect **more uncertainty** in that input (e.g. for a early-stage
+company with unpredictable margins). Decrease σ to reflect **high confidence** (e.g.
+a regulated utility with stable cash flows).
+""")
+
+    with st.expander("⭐ Investment Rating"):
+        st.markdown("""
+The rating system in the header banner combines **DCF upside/downside** with the
+**moat score** to produce a −5 to +5 star rating.
+
+#### Base rating from DCF upside
+
+| Stars | Upside vs current price |
+|---|---|
+| ★★★★★ +5 | > +45% |
+| ★★★★ +4  | > +30% |
+| ★★★ +3   | > +15% |
+| ★★ +2    | > +5% |
+| ★ +1     | > 0% |
+| 0 (Hold) | −5% to 0% |
+| ★ −1     | > −15% |
+| ★★ −2    | > −25% |
+| ★★★ −3   | > −35% |
+| ★★★★ −4  | > −45% |
+| ★★★★★ −5 | ≤ −45% |
+
+#### Moat adjustment
+
+The moat score adjusts the base stars by at most ±2:
+- **High moat (8–10):** tempers short/sell signals — wide-moat companies often trade at a
+  premium the DCF cannot capture. A −3 signal becomes −1 or −2.
+- **Low moat (0–3):** tempers buy signals — apparent upside is less reliable without
+  durable competitive advantages. A +3 signal becomes +1 or +2.
+- **Mid moat (4–6):** no adjustment applied.
+
+#### Color coding
+- 🟢 **Green (+3 to +5):** Strong conviction buy signal
+- 🟡 **Yellow (−2 to +2):** Hold / marginal signal — do more research
+- 🔴 **Red (−3 to −5):** Strong conviction short / avoid signal
+""")
+
+    with st.expander("⚠️ Limitations & Disclaimers"):
+        st.markdown("""
+This tool is for **educational and research purposes only**. It is not financial
+advice, and no investment decision should be based solely on its output.
+
+#### Known limitations
+
+| Limitation | Impact |
+|---|---|
+| EDGAR data completeness | Some companies file partial XBRL (especially pre-2012). Missing rows show "—". |
+| Single-stage growth model | The DCF uses one growth rate for all explicit years. Reality has phases. |
+| Terminal value sensitivity | TV often constitutes 50–80% of EV — small g or WACC changes dominate. |
+| No macro-scenario modeling | Interest rate changes, recessions, and FX risk are not modeled. |
+| yfinance rate limits | Beta / market-cap / price may fail or be stale if yfinance is throttled. |
+| Historical ≠ forward | Assumptions pre-filled from history. Structural breaks (new products, M&A) require manual overrides. |
+| No options / warrants dilution | Shares outstanding is fully diluted from EDGAR — but may not include all derivative instruments. |
+
+#### Free hosting (Streamlit Community Cloud)
+1. Push this repo to GitHub (public or private).
+2. Sign in at **streamlit.io/cloud** with your GitHub account.
+3. Click **New app** → pick the repo → set main file to `app.py` → **Deploy**.
+4. The app is live at `https://<your-app>.streamlit.app` — free, no credit card required.
+""")
+
+    with st.expander("🔧 Troubleshooting"):
+        st.markdown("""
+| Problem | Fix |
+|---|---|
+| Revenue shows "—" or 0 | Some companies use non-standard XBRL tags. Try a different ticker or check EDGAR directly. |
+| Rating doesn't update | Click **🗑️ Clear cache + refresh** in the sidebar. |
+| DCF fair value is NaN | WACC ≤ terminal growth rate — lower terminal growth or raise WACC. |
+| Beta shows "—" | yfinance may be rate-limited. Reload the page or set beta manually in Assumptions. |
+| WACC seems too high/low | Override the debt weight or cost of debt in the Assumptions tab. |
+| Monte Carlo all invalid | Check that WACC > terminal growth by at least 0.5pp. Widen σ values. |
+| SEC EDGAR slow | EDGAR's free API can be slow. The tool caches results — re-run the same ticker instantly. |
 """)

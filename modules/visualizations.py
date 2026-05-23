@@ -151,6 +151,49 @@ def sensitivity_heatmap(grid: pd.DataFrame, current_price: float | None = None) 
     return fig
 
 
+def monte_carlo_histogram(
+    simulations: "np.ndarray",
+    current_price: float | None = None,
+    p5: float | None = None,
+    p50: float | None = None,
+    p95: float | None = None,
+) -> go.Figure:
+    """Histogram of MC fair-value-per-share outcomes."""
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(
+        x=simulations,
+        nbinsx=60,
+        marker_color="#1f6feb",
+        opacity=0.85,
+        name="Simulations",
+    ))
+    if current_price:
+        fig.add_vline(
+            x=current_price, line_dash="solid", line_color="#ef4444", line_width=2,
+            annotation_text=f"Current ${current_price:,.2f}", annotation_position="top right",
+        )
+    if p5 is not None:
+        fig.add_vline(x=p5, line_dash="dot", line_color="#eab308", line_width=1,
+                      annotation_text=f"P5 ${p5:,.0f}", annotation_position="top left")
+    if p50 is not None:
+        fig.add_vline(x=p50, line_dash="dash", line_color="#22c55e", line_width=2,
+                      annotation_text=f"Median ${p50:,.0f}", annotation_position="top")
+    if p95 is not None:
+        fig.add_vline(x=p95, line_dash="dot", line_color="#eab308", line_width=1,
+                      annotation_text=f"P95 ${p95:,.0f}", annotation_position="top right")
+    fig.update_layout(
+        title="Monte Carlo: Distribution of Fair Value per Share",
+        xaxis_title="Fair Value per Share ($)",
+        yaxis_title="Count",
+        template="plotly_dark",
+        paper_bgcolor="#141a2a",
+        plot_bgcolor="#141a2a",
+        font=dict(color="#e6edf3"),
+        showlegend=False,
+    )
+    return fig
+
+
 __all__ = [
     "revenue_and_margins",
     "roic_vs_wacc",
@@ -160,4 +203,5 @@ __all__ = [
     "dcf_projection_chart",
     "price_history_chart",
     "sensitivity_heatmap",
+    "monte_carlo_histogram",
 ]
